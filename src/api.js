@@ -181,8 +181,10 @@ export const doSendTx = (net, transaction, id = 42) => {
 export const getAPIEndpoint = (net) => {
   if (net === 'MainNet') {
     return 'http://api.wallet.cityofzion.io'
-  } else {
+  } else if (net === 'TestNet') {
     return 'http://testnet-api.wallet.cityofzion.io'
+  } else {
+    return 'http://privnet-api.switcheo.io'
   }
 }
 
