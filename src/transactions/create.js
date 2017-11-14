@@ -1,4 +1,4 @@
-import { getScriptHashFromPublicKey } from '../wallet.js'
+import { getScriptHashFromAddress } from '../wallet.js'
 import { buildScript } from '../sc/scriptBuilder.js'
 
 export const CURRENT_VERSION = 0
