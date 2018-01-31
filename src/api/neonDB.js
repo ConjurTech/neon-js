@@ -18,9 +18,7 @@ export const getAPIEndpoint = net => {
     case 'MainNet':
       return 'http://api.wallet.cityofzion.io'
     case 'TestNet':
-      return 'http://testnet-api.wallet.cityofzion.io'
-    case 'PrivNet':
-      return 'http://privnet-api.switcheo.io'
+      return 'https://test-db.switcheo.network'
     default:
       return net
   }
