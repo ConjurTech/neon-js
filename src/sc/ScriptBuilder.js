@@ -20,6 +20,7 @@ class ScriptBuilder extends StringStream {
 
   /**
    * Private method to append an array
+   * @private
    * @param {Array} arr
    * @return {ScriptBuilder} this
    */
@@ -32,6 +33,7 @@ class ScriptBuilder extends StringStream {
 
   /**
    * Private method to append a hexstring.
+   * @private
    * @param {string} hexstring - Hexstring(BE)
    * @return {ScriptBuilder} this
    */
@@ -46,11 +48,11 @@ class ScriptBuilder extends StringStream {
       this.str += hexstring
     } else if (size < 0x10000) {
       this.emit(OpCode.PUSHDATA2)
-      this.str += num2hexstring(size, 4)
+      this.str += num2hexstring(size, 2)
       this.str += hexstring
     } else {
       this.emit(OpCode.PUSHDATA4)
-      this.str += num2hexstring(size, 8)
+      this.str += num2hexstring(size, 4)
       this.str += hexstring
     }
     return this
@@ -58,6 +60,7 @@ class ScriptBuilder extends StringStream {
 
   /**
    * Private method to append a number.
+   * @private
    * @param {number} num
    * @return {ScriptBuilder} this
    */
@@ -65,17 +68,19 @@ class ScriptBuilder extends StringStream {
     if (num === -1) return this.emit(OpCode.PUSHM1)
     if (num === 0) return this.emit(OpCode.PUSH0)
     if (num > 0 && num <= 16) return this.emit(OpCode.PUSH1 - 1 + num)
-    return this.emitPush(reverseHex(int2hex(num)))
+    const hexstring = int2hex(num)
+    return this.emitPush(reverseHex('0'.repeat(16 - hexstring.length) + hexstring))
   }
 
   /**
    * Private method to append a ContractParam
+   * @private
    * @param {ContractParam} param
    * @return {ScriptBuilder} this
    */
   _emitParam (param) {
-    if (!param.type) throw new Error(`No type available!`)
-    if (!param.value) throw new Error(`No value available!`)
+    if (!param.type) throw new Error('No type available!')
+    if (!param.value) throw new Error('No value available!')
     switch (param.type) {
       case 'String':
         return this._emitString(str2hexstring(param.value))
@@ -143,6 +148,7 @@ class ScriptBuilder extends StringStream {
    * @return {ScriptBuilder} this
    */
   emitPush (data) {
+    if (data == null) return this.emitPush(false)
     switch (typeof (data)) {
       case 'boolean':
         return this.emit(data ? OpCode.PUSHT : OpCode.PUSHF)
@@ -162,20 +168,6 @@ class ScriptBuilder extends StringStream {
         throw new Error()
     }
   }
-}
-
-/**
- * A wrapper method around ScripBuilder for creating a VM script.
- * @param {object} props - Properties passed in as an object.
- * @param {string} props.scriptHash - The contract scriptHash.
- * @param {string} [props.operation=null] - The method name to call.
- * @param {Array} [props.args=undefined] - The arguments of the method to pass in.
- * @param {boolean} [props.useTailCall=false] - To use Tail Call.
- * @return {string} The VM Script.
- */
-export const createScript = ({ scriptHash, operation = null, args = undefined, useTailCall = false }) => {
-  const sb = new ScriptBuilder()
-  return sb.emitAppCall(scriptHash, operation, args, useTailCall).str
 }
 
 export default ScriptBuilder

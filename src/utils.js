@@ -1,4 +1,6 @@
 import { SHA256, RIPEMD160, enc } from 'crypto-js'
+import BN from 'bignumber.js'
+import util from 'util'
 
 /**
  * @param {arrayBuffer} buf
@@ -87,14 +89,16 @@ export const int2hex = num => {
 /**
  * Converts a number to a big endian hexstring of a suitable size, optionally little endian
  * @param {number} num
- * @param {number} size - The required size in hex chars, eg 2 for Uint8, 4 for Uint16. Defaults to 2.
+ * @param {number} size - The required size in bytes, eg 1 for Uint8, 2 for Uint16. Defaults to 1.
  * @param {boolean} littleEndian - Encode the hex in little endian form
  * @return {string}
  */
-export const num2hexstring = (num, size = 2, littleEndian = false) => {
+export const num2hexstring = (num, size = 1, littleEndian = false) => {
   if (typeof num !== 'number') throw new Error('num must be numeric')
   if (num < 0) throw new RangeError('num is unsigned (>= 0)')
+  if (size % 1 !== 0) throw new Error('size must be a whole integer')
   if (!Number.isSafeInteger(num)) throw new RangeError(`num (${num}) must be a safe integer`)
+  size = size * 2
   let hexstring = num.toString(16)
   hexstring = hexstring.length % size === 0 ? hexstring : ('0'.repeat(size) + hexstring).substring(hexstring.length)
   if (littleEndian) hexstring = reverseHex(hexstring)
@@ -104,12 +108,13 @@ export const num2hexstring = (num, size = 2, littleEndian = false) => {
 /**
  * Converts a number to a Fixed8 format hex string
  * @param {number} num
- * @param {number} size output size in hex chars
+ * @param {number} size output size in bytes
  * @return {string} number in Fixed8 representation.
  */
-export const num2fixed8 = (num, size = 16) => {
+export const num2fixed8 = (num, size = 8) => {
   if (typeof num !== 'number') throw new Error('num must be numeric')
-  return num2hexstring(Math.round(num * Math.pow(10, 8)), size, true)
+  if (size % 1 !== 0) throw new Error('size must be a whole integer')
+  return new Fixed8(num.toFixed(8)).toReverseHex().slice(0, size * 2)
 }
 
 /**
@@ -121,7 +126,7 @@ export const fixed82num = (fixed8hex) => {
   if (typeof fixed8hex !== 'string') throw new Error('fixed8hex must be a string')
   if (fixed8hex.length % 2 !== 0) throw new Error('fixed8hex must be hex')
   if (fixed8hex === '') return 0
-  return parseInt(reverseHex(fixed8hex), 16) / Math.pow(10, 8)
+  return Fixed8.fromReverseHex(fixed8hex).toNumber()
 }
 
 /**
@@ -134,13 +139,13 @@ export const num2VarInt = (num) => {
     return num2hexstring(num)
   } else if (num <= 0xffff) {
     // uint16
-    return 'fd' + num2hexstring(num, 4, true)
+    return 'fd' + num2hexstring(num, 2, true)
   } else if (num <= 0xffffffff) {
     // uint32
-    return 'fe' + num2hexstring(num, 8, true)
+    return 'fe' + num2hexstring(num, 4, true)
   } else {
     // uint64
-    return 'ff' + num2hexstring(num, 16, true)
+    return 'ff' + num2hexstring(num, 8, true)
   }
 }
 
@@ -281,4 +286,150 @@ export const sha256 = (hex) => {
   if (hex.length % 2 !== 0) throw new Error(`Incorrect Length: ${hex}`)
   let hexEncoded = enc.Hex.parse(hex)
   return SHA256(hexEncoded).toString()
+}
+
+/**
+ * @class Fixed8
+ * @classdesc A wrapper around bignumber.js that adds on helper methods commonly used in neon-js
+ * @param {string|int} value
+ * @param {number} [base]
+ */
+export class Fixed8 extends BN {
+  constructor (input, base = undefined) {
+    if (typeof input === 'number') input = input.toFixed(8)
+    super(input, base)
+  }
+
+  toHex () {
+    const hexstring = this.mul(100000000).round().toString(16)
+    return '0'.repeat(16 - hexstring.length) + hexstring
+  }
+
+  toReverseHex () {
+    return reverseHex(this.toHex())
+  }
+
+  [util.inspect.custom] (depth, opts) {
+    return this.toFixed(8)
+  }
+
+  static fromHex (hex) {
+    return new Fixed8(hex, 16).div(100000000)
+  }
+
+  static fromReverseHex (hex) {
+    return this.fromHex(reverseHex(hex))
+  }
+
+  /**
+   * Returns a Fixed8 whose value is rounded upwards to the next whole number.
+   * @return {Fixed8}
+   */
+  ceil () {
+    return new Fixed8(super.ceil())
+  }
+
+  /**
+   * Returns a Fixed8 whose value is rounded downwards to the previous whole number.
+   * @return {Fixed8}
+   */
+  floor () {
+    return new Fixed8(super.floor())
+  }
+
+  /**
+   * Returns a Fixed8 rounded to the nearest dp decimal places according to rounding mode rm.
+   * If dp is null, round to whole number.
+   * If rm is null, round according to default rounding mode.
+   * @param {number} [dp]
+   * @param {number} [rm]
+   * @return {Fixed8}
+   */
+  round (dp = null, rm = null) {
+    return new Fixed8(super.round(dp, rm))
+  }
+
+  /**
+   * See [[dividedBy]]
+   * @param {string|number|Fixed8}
+   * @param {number} [base]
+   * @return {Fixed8}
+   */
+  div (n, base = null) {
+    return this.dividedBy(n, base)
+  }
+
+  /**
+   * Returns a Fixed8 whose value is the value of this Fixed8 divided by `n`
+   * @param {string|number|Fixed8}
+   * @param {number} [base]
+   * @return {Fixed8}
+   * @alias [[div]]
+   */
+  dividedBy (n, base = null) {
+    return new Fixed8(super.dividedBy(n, base))
+  }
+
+  /**
+   * See [[times]]
+   * @param {string|number|Fixed8}
+   * @param {number} [base]
+   * @return {Fixed8}
+   */
+  mul (n, base = null) {
+    return this.times(n, base)
+  }
+
+  /**
+   * Returns a Fixed8 whose value is the value of this Fixed8 multipled by `n`
+   * @param {string|number|Fixed8}
+   * @param {number} [base]
+   * @return {Fixed8}
+   * @alias [[mul]]
+   */
+  times (n, base = null) {
+    return new Fixed8(super.times(n, base))
+  }
+
+  /**
+   * See [[plus]]
+   * @param {string|number|Fixed8}
+   * @param {number} [base]
+   * @return {Fixed8}
+   */
+  add (n, base = null) {
+    return this.plus(n, base)
+  }
+
+  /**
+   * Returns a Fixed8 whose value is the value of this Fixed8 plus `n`
+   * @param {string|number|Fixed8}
+   * @param {number} [base]
+   * @return {Fixed8}
+   * @alias [[add]]
+   */
+  plus (n, base = null) {
+    return new Fixed8(super.plus(n, base))
+  }
+
+  /**
+   * See [[minus]]
+   * @param {string|number|Fixed8}
+   * @param {number} [base]
+   * @return {Fixed8}
+   */
+  sub (n, base = null) {
+    return this.minus(n, base)
+  }
+
+  /**
+   * Returns a Fixed8 whose value is the value of this Fixed8 minus `n`
+   * @param {string|number|Fixed8}
+   * @param {number} [base]
+   * @return {Fixed8}
+   * @alias [[sub]]
+   */
+  minus (n, base = null) {
+    return new Fixed8(super.minus(n, base))
+  }
 }

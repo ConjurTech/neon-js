@@ -1,64 +1,106 @@
-import * as neonDB from './neonDB'
-import * as neoscan from './neoscan'
 import { Account } from '../wallet'
 import { ASSET_ID } from '../consts'
 import { Query } from '../rpc'
-import { Transaction } from '../transactions'
+import { Transaction, TransactionOutput, TxAttrUsage } from '../transactions'
+import { reverseHex } from '../utils'
+import { loadBalance } from './switch'
+import logger from '../logging'
+
+const log = logger('api')
 
 /**
- * Check that properties are defined in obj.
- * @param {object} obj - Object to check.
- * @param {string[]}  props - List of properties to check.
+ * The core API methods are series of methods defined to aid conducting core functionality while making it easy to modify any parts of it.
+ * The core functionality are sendAsset, claimGas and doInvoke.
+ * These methods are designed to be modular in nature and intended for developers to create their own custom methods.
+ * The methods revolve around a configuration object in which everything is placed. Each method will take in the configuration object, check for its required fields and perform its operations, adding its results to the configuration object and returning it.
+ * For example, the getBalanceFrom function requires net and address fields and appends the url and balance fields to the object.
  */
-const checkProperty = (obj, ...props) => {
-  for (const prop of props) {
-    if (!obj.hasOwnProperty(prop)) {
-      throw new Error(`Property not found: ${prop}`)
-    }
-  }
-}
 
 /**
- * Helper method to retrieve balance and URL from an endpoint. If URL is provided, it is not overriden.
+ * Function to construct and execute a ContractTransaction.
  * @param {object} config - Configuration object.
  * @param {string} config.net - 'MainNet', 'TestNet' or a neon-wallet-db URL.
  * @param {string} config.address - Wallet address
- * @param {object} api - The endpoint API object. eg, neonDB or Neoscan.
- * @return {object} Configuration object + url + balance
+ * @param {string} [config.privateKey] - private key to sign with. Either this or signingFunction and public key is required.
+ * @param {function} [config.signingFunction] - An external signing function to sign with. Either this or privateKey is required.
+ * @param {string} [config.publicKey] - A public key for the singing function. Either this or privateKey is required.
+ * @param {TransactionOutput[]} config.intents - Intents.
+ * @return {object} Configuration object.
  */
-export const getBalanceFrom = (config, api) => {
-  checkProperty(config, 'net', 'address')
-  if (!api.getBalance || !api.getRPCEndpoint) throw new Error(`Invalid type. Is this an API object?`)
-  const balanceP = api.getBalance(config.net, config.address)
-  const urlP = api.getRPCEndpoint(config.net)
-
-  return Promise.all([balanceP, urlP])
-    .then((values) => {
-      const override = { balance: values[0] }
-      if (!config.url) override.url = values[1]
-      return Object.assign(config, override)
+export const sendAsset = config => {
+  return loadBalance(getRPCEndpointFrom, config)
+    .then(url => Object.assign(config, { url }))
+    .then(c => loadBalance(getBalanceFrom, config))
+    .then(c => createTx(c, 'contract'))
+    .then(c => signTx(c))
+    .then(c => sendTx(c))
+    .catch(err => {
+      const dump = {
+        net: config.net,
+        address: config.address,
+        intents: config.intents,
+        balance: config.balance,
+        tx: config.tx
+      }
+      log.error(`sendAsset failed with: ${err.message}. Dumping config`, dump)
+      throw err
     })
 }
 
 /**
- * Helper method to retrieve claims and URL from an endpoint.
+ * Perform a ClaimTransaction for all available GAS based on API
  * @param {object} config - Configuration object.
  * @param {string} config.net - 'MainNet', 'TestNet' or a neon-wallet-db URL.
  * @param {string} config.address - Wallet address
- * @param {object} api - The endpoint APi object. eg, neonDB or Neoscan.
- * @return {object} Configuration object + url + balance
+ * @param {string} [config.privateKey] - private key to sign with. Either this or signingFunction and publicKey is required.
+ * @param {function} [config.signingFunction] - An external signing function to sign with. Either this or privateKey is required.
+ * @param {string} [config.publicKey] - A public key for the singing function. Either this or privateKey is required.
+ * @return {object} Configuration object.
  */
-export const getClaimsFrom = (config, api) => {
-  checkProperty(config, 'net', 'address')
-  if (!api.getBalance || !api.getRPCEndpoint) throw new Error(`Invalid type. Is this an API object?`)
-  const claimsP = api.getClaims(config.net, config.address)
-  // Get URL
-  const urlP = api.getRPCEndpoint(config.net)
-  // Return {url, balance, ...props}
+export const claimGas = config => {
+  return loadBalance(getRPCEndpointFrom, config)
+    .then(url => Object.assign(config, { url }))
+    .then(c => loadBalance(getClaimsFrom, config))
+    .then(c => createTx(c, 'claim'))
+    .then(c => signTx(c))
+    .then(c => sendTx(c))
+    .catch(err => {
+      const dump = {
+        net: config.net, address: config.address, intents: config.intents, claims: config.claims, tx: config.tx
+      }
+      log.error(`claimGas failed with ${err.message}. Dumping config`, dump)
+      throw err
+    })
+}
 
-  return Promise.all([claimsP, urlP])
-    .then((values) => {
-      return Object.assign(config, { claims: values[0], url: values[1] })
+/**
+ * Perform a InvocationTransaction based on config given.
+ * @param {object} config - Configuration object.
+ * @param {string} config.net - 'MainNet', 'TestNet' or a neon-wallet-db URL.
+ * @param {string} config.address - Wallet address
+ * @param {string} [config.privateKey] - private key to sign with. Either this or signingFunction and publicKey is required.
+ * @param {function} [config.signingFunction] - An external signing function to sign with. Either this or privateKey is required.
+ * @param {string} [config.publicKey] - A public key for the singing function. Either this or privateKey is required.
+ * @param {object} [config.intents] - Intents
+ * @param {string} config.script - VM script. Must include empty args parameter even if no args are present
+ * @param {number} config.gas - gasCost of VM script.
+ * @return {object} Configuration object.
+ */
+export const doInvoke = config => {
+  return loadBalance(getRPCEndpointFrom, config)
+    .then(url => Object.assign(config, { url }))
+    .then(c => loadBalance(getBalanceFrom, config))
+    .then(c => addAttributesForMintToken(c))
+    .then(c => createTx(c, 'invocation'))
+    .then(c => signTx(c))
+    .then(c => attachInvokedContractForMintToken(c))
+    .then(c => sendTx(c))
+    .catch(err => {
+      const dump = {
+        net: config.net, address: config.address, intents: config.intents, balance: config.balance, script: config.script, gas: config.gas, tx: config.tx
+      }
+      log.error(`doInvoke failed with ${err.message}. Dumping config`, dump)
+      throw err
     })
 }
 
@@ -66,7 +108,7 @@ export const getClaimsFrom = (config, api) => {
  * Creates a transaction with the given config and txType.
  * @param {object} config - Configuration object.
  * @param {string|number} txType - Transaction Type. Name of transaction or the transaction type number. eg, 'claim' or 2.
- * @return {object} Configuration object + tx
+ * @return {Promise<object>} Configuration object + tx
  */
 export const createTx = (config, txType) => {
   if (typeof txType === 'string') txType = txType.toLowerCase()
@@ -86,10 +128,10 @@ export const createTx = (config, txType) => {
     case 209:
       checkProperty(config, 'balance', 'gas', 'script')
       if (!config.intents) config.intents = []
-      tx = Transaction.createInvocationTx(config.balance, config.intents, config.script, config.gas)
+      tx = Transaction.createInvocationTx(config.balance, config.intents, config.script, config.gas, config.override)
       break
     default:
-      throw new Error(`Tx Type not found: ${txType}`)
+      return Promise.reject(new Error(`Tx Type not found: ${txType}`))
   }
   return Promise.resolve(Object.assign(config, { tx }))
 }
@@ -101,9 +143,9 @@ export const createTx = (config, txType) => {
  * @param {string} [config.privateKey] - private key to sign with.
  * @param {string} [config.publicKey] - public key. Required if using signingFunction.
  * @param {function} [config.signingFunction] - External signing function. Requires publicKey.
- * @return {object} Configuration object.
+ * @return {Promise<object>} Configuration object.
  */
-export const signTx = (config) => {
+export const signTx = config => {
   checkProperty(config, 'tx')
   let promise
   if (config.signingFunction) {
@@ -111,12 +153,18 @@ export const signTx = (config) => {
     promise = config.signingFunction(config.tx, acct.publicKey)
   } else if (config.privateKey) {
     let acct = new Account(config.privateKey)
-    if (config.address !== acct.address) throw new Error(`Private Key and Balance address does not match!`)
-    promise = Promise.resolve(config.tx.sign(config.privateKey))
+    if (config.address !== acct.address) {
+      return Promise.reject(
+        new Error('Private Key and Balance address does not match!')
+      )
+    }
+    promise = Promise.resolve(config.tx.sign(acct.privateKey))
   } else {
-    throw new Error(`Needs privateKey or signingFunction to sign!`)
+    return Promise.reject(
+      new Error('Needs privateKey or signingFunction to sign!')
+    )
   }
-  return promise.then((signedTx) => {
+  return promise.then(signedTx => {
     return Object.assign(config, { tx: signedTx })
   })
 }
@@ -128,17 +176,25 @@ export const signTx = (config) => {
  * @param {string} config.url - NEO Node URL.
  * @return {object} Configuration object + response
  */
-export const sendTx = (config) => {
+export const sendTx = config => {
   checkProperty(config, 'tx', 'url')
   return Query.sendRawTransaction(config.tx)
     .execute(config.url)
-    .then((res) => {
+    .then(res => {
       // Parse result
       if (res.result === true) {
         res.txid = config.tx.hash
         if (config.balance) {
           config.balance.applyTx(config.tx, true)
         }
+      } else {
+        const dump = {
+          net: config.net, address: config.address, intents: config.intents, balance: config.balance, claims: config.claims, script: config.script, gas: config.gas, tx: config.tx
+        }
+        log.error(
+          `Transaction failed for ${config.address}: ${config.tx.serialize()}`,
+          dump
+        )
       }
       return Object.assign(config, { response: res })
     })
@@ -154,71 +210,191 @@ export const sendTx = (config) => {
  */
 export const makeIntent = (assetAmts, address) => {
   const acct = new Account(address)
-  return Object.keys(assetAmts).map((key) => {
-    return { assetId: ASSET_ID[key], value: assetAmts[key], scriptHash: acct.scriptHash }
+  return Object.keys(assetAmts).map(key => {
+    return TransactionOutput({
+      assetId: ASSET_ID[key],
+      value: assetAmts[key],
+      scriptHash: acct.scriptHash
+    })
   })
 }
 
 /**
- * Function to construct and execute a ContractTransaction.
+ * Adds attributes to the override object for mintTokens invocations.
  * @param {object} config - Configuration object.
- * @param {string} config.net - 'MainNet', 'TestNet' or a neon-wallet-db URL.
- * @param {string} config.address - Wallet address
- * @param {string} [privateKey] - private key to sign with. Either this or signingFunction is required.
- * @param {function} [signingFunction] - An external signing function to sign with. Either this or privateKey is required.
- * @param {TransactionOutput[]} intents - Intents.
  * @return {object} Configuration object.
  */
-export const sendAsset = (config) => {
-  return getBalanceFrom(config, neonDB)
-    .then(
-    (c) => c,
-    () => getBalanceFrom(config, neoscan)
-    )
-    .then((c) => createTx(c, 'contract'))
-    .then((c) => signTx(c))
-    .then((c) => sendTx(c))
+const addAttributesForMintToken = config => {
+  if (!config.override) config.override = {}
+  if (
+    typeof config.script === 'object' &&
+    config.script.operation === 'mintTokens' &&
+    config.script.scriptHash
+  ) {
+    config.override.attributes = [
+      {
+        data: reverseHex(config.script.scriptHash),
+        usage: TxAttrUsage.Script
+      }
+    ]
+  }
+  return config
 }
 
 /**
- * Perform a ClaimTransaction for all available GAS based on API
+ * Adds the contractState to mintTokens invocations.
  * @param {object} config - Configuration object.
- * @param {string} config.net - 'MainNet', 'TestNet' or a neon-wallet-db URL.
- * @param {string} config.address - Wallet address
- * @param {string} [privateKey] - private key to sign with. Either this or signingFunction is required.
- * @param {function} [signingFunction] - An external signing function to sign with. Either this or privateKey is required.
  * @return {object} Configuration object.
  */
-export const claimGas = (config) => {
-  return getClaimsFrom(config, neonDB)
-    .then(
-    (c) => c,
-    () => getClaimsFrom(config, neoscan)
-    )
-    .then((c) => createTx(c, 'claim'))
-    .then((c) => signTx(c))
-    .then((c) => sendTx(c))
+const attachInvokedContractForMintToken = config => {
+  if (
+    typeof config.script === 'object' &&
+    config.script.operation === 'mintTokens' &&
+    config.script.scriptHash
+  ) {
+    return Query.getContractState(config.script.scriptHash)
+      .execute(config.url)
+      .then(contractState => {
+        const attachInvokedContract = {
+          invocationScript: '0000',
+          verificationScript: contractState.result.script
+        }
+        config.tx.scripts.unshift(attachInvokedContract)
+        return config
+      })
+  }
+  return config
 }
 
 /**
- * Perform a InvocationTransaction based on config given.
- * @param {object} config - Configuration object.
- * @param {string} config.net - 'MainNet', 'TestNet' or a neon-wallet-db URL.
- * @param {string} config.address - Wallet address
- * @param {string} [privateKey] - private key to sign with. Either this or signingFunction is required.
- * @param {function} [signingFunction] - An external signing function to sign with. Either this or privateKey is required.
- * @param {object} [intents] - Intents
- * @param {string} config.script - VM script.
- * @param {number} config.gas - gasCost of VM script.
- * @return {object} Configuration object.
+ * Check that properties are defined in obj.
+ * @param {object} obj - Object to check.
+ * @param {string[]}  props - List of properties to check.
  */
-export const doInvoke = (config) => {
-  return getBalanceFrom(config, neonDB)
-    .then(
-    (c) => c,
-    () => getBalanceFrom(config, neoscan)
-    )
-    .then((c) => createTx(c, 'invocation'))
-    .then((c) => signTx(c))
-    .then((c) => sendTx(c))
+const checkProperty = (obj, ...props) => {
+  for (const prop of props) {
+    if (!obj.hasOwnProperty(prop)) {
+      throw new ReferenceError(`Property not found: ${prop}`)
+    }
+  }
+}
+
+/**
+ * These are a set of helper methods that can be used to retrieve information from 3rd party API in conjunction with the API chain methods
+ */
+
+/**
+ * Helper method to retrieve balance and URL from an endpoint. If URL is provided, it is not overriden.
+ * @param {object} config - Configuration object.
+ * @param {string} config.net - 'MainNet' or 'TestNet'
+ * @param {string} config.address - Wallet address
+ * @param {object} api - The endpoint API object. eg, neonDB or Neoscan.
+ * @return {Promise<object>} Configuration object + balance
+ */
+export const getBalanceFrom = (config, api) => {
+  return new Promise((resolve) => {
+    checkProperty(config, 'net', 'address')
+    if (!api.getBalance || !api.getRPCEndpoint) { throw new Error('Invalid type. Is this an API object?') }
+    resolve()
+  }).then(() => {
+    const { net, address } = config
+    return api.getBalance(net, address)
+  }).then(balance => {
+    return Object.assign(config, { balance })
+  })
+}
+
+/**
+ * Helper method to retrieve claims and URL from an endpoint.
+ * @param {object} config - Configuration object.
+ * @param {string} config.net - 'MainNet', 'TestNet'
+ * @param {string} config.address - Wallet address
+ * @param {object} api - The endpoint APi object. eg, neonDB or Neoscan.
+ * @return {Promise<object>} Configuration object + claims
+ */
+export const getClaimsFrom = (config, api) => {
+  return new Promise((resolve) => {
+    checkProperty(config, 'net', 'address')
+    if (!api.getBalance || !api.getRPCEndpoint) { throw new Error('Invalid type. Is this an API object?') }
+    resolve()
+  }).then(() => {
+    const { net, address } = config
+    return api.getClaims(net, address)
+  }).then(claims => {
+    return Object.assign(config, { claims })
+  })
+}
+
+/**
+ * Helper method to returns an appropriate RPC endpoint retrieved from an endpoint.
+ * @param {object} config - Configuration object.
+ * @param {string} config.net - 'MainNet', 'TestNet' or a custom URL.
+ * @param {object} api - The endpoint API object. eg, neonDB or Neoscan.
+ * @return {Promise<string>} - url
+ */
+export const getRPCEndpointFrom = (config, api) => {
+  return new Promise((resolve) => {
+    checkProperty(config, 'net')
+    if (!api.getRPCEndpoint) { throw new Error('Invalid type. Is this an API object?') }
+    resolve()
+  }).then(() => {
+    const { net } = config
+    return api.getRPCEndpoint(net)
+  })
+}
+
+/**
+ * Helper method to get transaction history for an account
+ * @param {object} config - Configuration object.
+ * @param {string} config.net - 'MainNet', 'TestNet' or a custom URL.
+ * @param {string} config.address - Wallet address
+ * @param {object} api - The endpoint API object. eg, neonDB or Neoscan.
+ * @return {Promise<string>} - Transaction history
+ */
+export const getTransactionHistoryFrom = (config, api) => {
+  return new Promise((resolve) => {
+    checkProperty(config, 'net', 'address')
+    if (!api.getTransactionHistory) { throw new Error('Invalid type. Is this an API object?') }
+    resolve()
+  }).then(() => {
+    const { address, net } = config
+    return api.getTransactionHistory(net, address)
+  })
+}
+
+/**
+ * Helper method to get the current height of the light wallet DB
+ * @param {object} config - Configuration object.
+ * @param {string} config.net - 'MainNet', 'TestNet' or a custom URL.
+ * @param {object} api - The endpoint API object. eg, neonDB or Neoscan.
+ * @return {Promise<string>} - URL
+ */
+export const getWalletDBHeightFrom = (config, api) => {
+  return new Promise((resolve) => {
+    checkProperty(config, 'net')
+    if (!api.getWalletDBHeight) { throw new Error('Invalid type. Is this an API object?') }
+    resolve()
+  }).then(() => {
+    const { net } = config
+    return api.getWalletDBHeight(net)
+  })
+}
+
+/**
+ * Helper method to get the maximum amount of gas claimable after spending all NEO.
+ * @param {object} config - Configuration object.
+ * @param {string} config.net - 'MainNet', 'TestNet'
+ * @param {string} config.address - Wallet address
+ * @param {object} api - The endpoint APi object. eg, neonDB or Neoscan.
+ * @return {Promise<Fixed8>} max claimable GAS
+ */
+export const getMaxClaimAmountFrom = (config, api) => {
+  return new Promise((resolve) => {
+    checkProperty(config, 'net', 'address')
+    if (!api.getMaxClaimAmount) { throw new Error('Invalid type. Is this an API object?') }
+    resolve()
+  }).then(() => {
+    const { net, address } = config
+    return api.getMaxClaimAmount(net, address)
+  })
 }

@@ -1,3 +1,6 @@
+///<reference path="../rpc/index.d.ts" />
+///<reference path="../transactions/index.d.ts" />
+
 declare module '@cityofzion/neon-js' {
   interface apiConfig {
     net: string,
@@ -29,16 +32,25 @@ declare module '@cityofzion/neon-js' {
     txid: string
   }
 
+  interface Prices {
+    [key: string]: number
+  }
+
   export module api {
     //coinmarketcap
     export namespace cmc {
       export function getPrice(coin?: string, currency?: string): Promise<number>
+      export function getPrices(coin?: string[], currency?: string): Promise<Prices>
     }
 
 
     //core
     export function getBalanceFrom(config: apiConfig, api: object): apiConfig
     export function getClaimsFrom(config: apiConfig, api: object): apiConfig
+    export function getRPCEndpointFrom(config: apiConfig, api: object): apiConfig
+    export function getTransactionHistoryFrom(config: apiConfig, api: object): apiConfig
+    export function getWalletDBHeightFrom(config: apiConfig, api: object): apiConfig
+    export function getMaxClaimAmountFrom(config: apiConfig, api: object): apiConfig
     export function createTx(config: apiConfig, txType: string): apiConfig
     export function signTx(config: apiConfig): apiConfig
     export function sendTx(config: apiConfig): apiConfig
@@ -51,7 +63,7 @@ declare module '@cityofzion/neon-js' {
     export namespace neonDB {
       export function getAPIEndpoint(net: string): string
       export function getBalance(net: string, address: string): Promise<Balance>
-      export function getClaims(net: string, address: string): Promise<Claim>
+      export function getClaims(net: string, address: string): Promise<Claims>
       export function getRPCEndpoint(net: string): Promise<string>
       export function getTransactionHistory(net: string, address: string): Promise<History>
       export function getWalletDBHeight(net: string): Promise<number>
@@ -102,13 +114,14 @@ declare module '@cityofzion/neon-js' {
       export function getAPIEndpoint(net: string): string
       export function getRPCEndpoint(net: string): Promise<string>
       export function getBalance(net: string, address: string): Promise<Balance>
-      export function getClaims(net: string, address: string): Promise<Claim>
+      export function getClaims(net: string, address: string): Promise<Claims>
     }
 
     //nep5
     export namespace nep5 {
-      export function getTokenInfo(net: string, scriptHash: string): Promise<{ name: string, symbol: string, decimals: number, totalSupply: number }>
-      export function getTokenBalance(net: string, scriptHash: string, address: string): Promise<number>
+      export function getTokenInfo(url: string, scriptHash: string): Promise<{ name: string, symbol: string, decimals: number, totalSupply: number }>
+      export function getTokenBalance(url: string, scriptHash: string, address: string): Promise<number>
+      export function getToken(url: string, scriptHash: string, address?: string): Promise<object>
       export function doTransferToken(
         net: string,
         scriptHash: string,
@@ -119,16 +132,21 @@ declare module '@cityofzion/neon-js' {
         signingFunction?: (unsigned: Transaction, publicKey: string) => Transaction
       ): Promise<RPCResponse>
     }
+
+    // switch
+    export function setApiSwitch(newSetting: number): void
+    export function setSwitchFreeze(newSetting: boolean): void
   }
   export interface semantic {
     get: {
       price: (coin?: string, currency?: string) => Promise<number>
+      prices: (coins?: string[], currency?: string) => Promise<object>
       balance: (net: string, address: string) => Promise<Balance>
       claims: (net: string, address: string) => Promise<Claim>
       transactionHistory: (net: string, address: string) => Promise<History>
       tokenBalance: (net: string, scriptHash: string) => Promise<{ name: string, symbol: string, decimals: number, totalSupply: number }>
       tokenInfo: (net: string, scriptHash: string) => Promise<{ name: string, symbol: string, decimals: number, totalSupply: number }>
-    },
+    }
     do: {
       sendAsset: (
         net: string,
@@ -148,5 +166,8 @@ declare module '@cityofzion/neon-js' {
         gasCost: number
       ) => Promise<RPCResponse>
     }
+    sendAsset: (config: apiConfig) => apiConfig
+    claimGas: (config: apiConfig) => apiConfig
+    doInvoke: (config: apiConfig) => apiConfig
   }
 }
