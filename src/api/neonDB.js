@@ -16,7 +16,7 @@ export const name = 'neonDB'
 export const getAPIEndpoint = net => {
   switch (net) {
     case 'MainNet':
-      return 'http://api.wallet.cityofzion.io'
+      return 'https://api.neonwallet.com'
     case 'TestNet':
       return 'https://test-db.switcheo.network'
     default:
